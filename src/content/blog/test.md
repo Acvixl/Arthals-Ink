@@ -1,8 +1,7 @@
 ---
 title: 2025-12-03 test
 description: Record today's log
-publishDate: 2012-12-12
-updatedDate: 2025-12-03T23:25:35+08:00
+
 tags:
   - Today_log
   - pubData
