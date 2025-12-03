@@ -2,7 +2,10 @@ name: Stamp blog publish/updated dates from git (BJ)
 
 on:
   workflow_dispatch:
-  push: {}
+  push:
+    paths:
+      - "src/content/blog/**/*.md"
+      - "src/content/blog/**/*.mdx"
 
 permissions:
   contents: write
@@ -19,7 +22,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Stamp dates (debug on)
+      - name: Stamp dates (SAFE frontmatter)
         shell: bash
         run: |
           set -euo pipefail
@@ -39,86 +42,92 @@ jobs:
               | awk -F'|' '$2!="github-actions[bot]" && $3 !~ /github-actions\[bot\]@users\.noreply\.github\.com/ {print $1; exit}'
           }
 
-          # 第一段 frontmatter 是否只含日期字段
-          first_fm_only_dates() {
-            awk '
-              NR==1 {inFM=($0=="---"); next}
-              inFM==1 && $0=="---" {exit 0}
-              inFM!=1 {exit 1}
-              $0 ~ /^[[:space:]]*$/ {next}
-              $0 ~ /^[[:space:]]*publishDate:/ {next}
-              $0 ~ /^[[:space:]]*updatedDate:/ {next}
-              {exit 1}
-            ' "$1"
-          }
-
-          # 抽取第一段 publishDate（用于合并时保留旧 publish）
-          extract_first_publish() {
-            awk '
-              NR==1 {inFM=($0=="---"); next}
-              inFM==1 && $0=="---" {exit 0}
-              inFM==1 && $0 ~ /^[[:space:]]*publishDate:/ {sub(/^[[:space:]]*publishDate:[ \t]*/, "", $0); print $0; exit 0}
-              END {exit 0}
-            ' "$1"
-          }
-
-          # 删除第一段 frontmatter（文件开头第一对 ---...---）
-          drop_first_frontmatter() {
-            awk '
-              NR==1 {inFM=($0=="---"); if (!inFM) {print; next} next}
-              inFM==1 && $0=="---" {inFM=0; next}
-              inFM==0 {print}
-            ' "$1"
-          }
-
-          # 写入/更新 publish & updated 到当前文件“第一段 frontmatter”
-          upsert_dates_into_first_fm() {
+          # ---- frontmatter 安全解析：只看文件开头，且必须在前 200 行闭合 ----
+          must_have_valid_frontmatter_if_present() {
             local file="$1"
-            local publish="$2"
-            local updated="$3"
+            # 如果第一行不是 ---，允许没有 frontmatter
+            if ! head -n 1 "$file" | grep -q '^---$'; then
+              return 0
+            fi
+            # 必须在前 200 行内找到第二个 ---
+            local marks
+            marks=$(head -n 200 "$file" | grep -n '^---$' | wc -l | tr -d ' ')
+            if [ "$marks" -lt 2 ]; then
+              echo "ERROR: Frontmatter not closed within first 200 lines: $file"
+              return 1
+            fi
+            # 如果前 200 行出现 >= 4 个 ---，说明有第二段 frontmatter，直接报错（避免破坏文件）
+            if [ "$marks" -ge 4 ]; then
+              echo "ERROR: Multiple frontmatter blocks detected near top (manual fix required): $file"
+              return 1
+            fi
+            return 0
+          }
 
-            pub_state=$(awk '
+          # 取 frontmatter（仅开头那段，不含分隔线）
+          extract_fm() {
+            awk '
               NR==1 {inFM=($0=="---"); next}
               inFM==1 && $0=="---" {exit 0}
-              inFM==1 && $0 ~ /^[[:space:]]*publishDate:/ {
-                line=$0
-                sub(/^[[:space:]]*publishDate:[ \t]*/, "", line)
-                gsub(/[ \t]/, "", line)
-                if (line=="" || line=="\"\"" || line=="'\'''\''" || line=="0") { print "EMPTY"; exit 0 }
-                print "OK"; exit 0
+              inFM==1 {print}
+            ' "$1"
+          }
+
+          # 取正文（去掉开头 frontmatter 块；如果没有 frontmatter，则正文=全文）
+          extract_body() {
+            awk '
+              NR==1 {
+                if ($0!="---") {print; next}
+                inFM=1; next
               }
-              END { print "MISSING" }
-            ' "$file")
+              inFM==1 && $0=="---" {inFM=0; next}
+              inFM!=1 {print}
+            ' "$1"
+          }
 
-            if [ "$pub_state" = "MISSING" ]; then
-              tmp=$(mktemp)
-              awk -v p="$publish" '
-                NR==1 {print; inFM=1; next}
-                inFM==1 && $0=="---" {print "publishDate: " p; print; inFM=0; next}
-                {print}
-              ' "$file" > "$tmp"
-              mv "$tmp" "$file"
-            elif [ "$pub_state" = "EMPTY" ]; then
-              sed -i "s/^[[:space:]]*publishDate:.*/publishDate: $publish/" "$file"
-            fi
+          # 在 frontmatter 文本里：检测 key 是否存在且非空（粗略判断）
+          fm_has_nonempty_key() {
+            local key="$1"
+            awk -v k="$key" '
+              $0 ~ "^[[:space:]]*" k ":" {
+                line=$0
+                sub("^[[:space:]]*" k ":[ \t]*", "", line)
+                gsub(/[ \t]/, "", line)
+                if (line=="" || line=="\"\"" || line=="'\'''\''") exit 1
+                exit 0
+              }
+              END {exit 2}
+            '  # 注意：这段 awk 从 stdin 读
+          }
 
-            if grep -q '^[[:space:]]*updatedDate:' "$file"; then
-              sed -i "s/^[[:space:]]*updatedDate:.*/updatedDate: $updated/" "$file"
-            else
-              tmp=$(mktemp)
-              awk -v u="$updated" '
-                NR==1 {print; inFM=1; next}
-                inFM==1 && $0=="---" {print "updatedDate: " u; print; inFM=0; next}
-                {print}
-              ' "$file" > "$tmp"
-              mv "$tmp" "$file"
-            fi
+          # 在 frontmatter 文本里：替换或插入 key: value（插入到最前面更安全）
+          fm_upsert_key() {
+            local key="$1"
+            local val="$2"
+            awk -v k="$key" -v v="$val" '
+              BEGIN{done=0}
+              $0 ~ "^[[:space:]]*" k ":" {
+                if (!done) {
+                  print k ": " v
+                  done=1
+                }
+                next
+              }
+              {print}
+              END{
+                if(!done){
+                  # 插在开头
+                  # 这里我们没法回到开头，因此采用：输出时在 BEGIN 预插
+                }
+              }
+            '
           }
 
           for file in "${files[@]}"; do
-            echo "=============================="
             echo "Processing $file"
             sed -i 's/\r$//' "$file"
+
+            must_have_valid_frontmatter_if_present "$file"
 
             first=$(git log --follow --diff-filter=A --format=%cI -- "$file" | tail -n 1 || true)
             last_human=$(last_human_commit_iso "$file" || true)
@@ -138,12 +147,8 @@ jobs:
             first_bj=$(to_bj "$first")
             last_bj=$(to_bj "$last_use")
 
-            echo "first(commit)  : $first -> $first_bj"
-            echo "last(human)    : ${last_human:-<none>}"
-            echo "last(any)      : ${last_any:-<none>}"
-            echo "last(used)     : $last_use -> $last_bj"
-
             if ! head -n 1 "$file" | grep -q '^---$'; then
+              # 没有 frontmatter：创建一个
               tmp=$(mktemp)
               {
                 echo "---"
@@ -153,30 +158,41 @@ jobs:
                 cat "$file"
               } > "$tmp"
               mv "$tmp" "$file"
-            else
-              # ✅ 关键修复：只在文件开头 200 行内检查是否存在第二个 frontmatter
-              fm_marks=$(head -n 200 "$file" | grep -c '^---$' || true)
+              continue
+            fi
 
-              if [ "${fm_marks:-0}" -ge 4 ]; then
-                if first_fm_only_dates "$file"; then
-                  echo "Detected double frontmatter (first only dates). Auto-merging..."
-                  pub_from_first="$(extract_first_publish "$file" || true)"
-                  tmp=$(mktemp)
-                  drop_first_frontmatter "$file" > "$tmp"
-                  mv "$tmp" "$file"
-                  publish_merge="${pub_from_first:-$first_bj}"
-                  upsert_dates_into_first_fm "$file" "$publish_merge" "$last_bj"
-                else
-                  echo "ERROR: Multiple frontmatter blocks detected (not auto-fixable): $file"
-                  exit 1
-                fi
-              else
-                upsert_dates_into_first_fm "$file" "$first_bj" "$last_bj"
+            # 有合法 frontmatter：读出 frontmatter & body，然后“重建”文件（保证结构不会坏）
+            fm="$(extract_fm "$file")"
+            body="$(extract_body "$file")"
+
+            # publishDate：仅缺失/空 才写入
+            if ! printf "%s\n" "$fm" | fm_has_nonempty_key "publishDate"; then
+              : # OK，已有 publishDate
+            else
+              # awk exit code:
+              # 0=存在且非空；1=存在但空；2=缺失
+              rc=$?
+              if [ "$rc" -ne 0 ]; then
+                fm="publishDate: $first_bj"$'\n'"$fm"
               fi
             fi
 
-            echo "--- frontmatter now ---"
-            awk 'NR==1{p=($0=="---")} p{print} NR>1 && p && $0=="---"{exit 0}' "$file"
+            # updatedDate：永远改成 last_bj（若存在就替换；不存在就插入到顶部）
+            # 先把旧的 updatedDate 行删掉
+            fm="$(printf "%s\n" "$fm" | awk '!($0 ~ /^[[:space:]]*updatedDate:/)')"
+            fm="updatedDate: $last_bj"$'\n'"$fm"
+
+            # 重建文件（只会有一个 frontmatter）
+            tmp=$(mktemp)
+            {
+              echo "---"
+              printf "%s\n" "$fm"
+              echo "---"
+              printf "%s\n" "$body"
+            } > "$tmp"
+            mv "$tmp" "$file"
+
+            sed -i 's/\r$//' "$file"
           done
 
       - name: Commit & push (if any)
