@@ -1,18 +1,18 @@
-name: Stamp blog publish/updated dates (safe parser, BJ)
+name: Stamp blog publish/updated dates (changed only, BJ)
 
 on:
-  workflow_dispatch:
   push:
     paths:
       - "src/content/blog/**/*.md"
       - "src/content/blog/**/*.mdx"
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
   stamp:
-    # 避免 bot 写回触发自身循环
+    # 防止 bot 写回再次触发造成循环
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
 
@@ -37,18 +37,52 @@ jobs:
       - name: Install deps
         run: pnpm install --frozen-lockfile
 
-      - name: Stamp dates (inline script)
+      - name: Collect changed blog files
+        id: changed
         shell: bash
+        run: |
+          set -euo pipefail
+
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.sha }}"
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # 手动运行：处理所有 blog 文件
+            git ls-files 'src/content/blog/**/*.md' 'src/content/blog/**/*.mdx' > changed_files.txt || true
+          else
+            # push 运行：只处理这次 push 改动的文件
+            if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+              RANGE="$AFTER"
+            else
+              RANGE="$BEFORE..$AFTER"
+            fi
+
+            git diff --name-only "$RANGE" \
+              | grep -E '^src/content/blog/.*\.(md|mdx)$' \
+              > changed_files.txt || true
+          fi
+
+          echo "Changed files:"
+          cat changed_files.txt || true
+
+          files_json=$(node -e "const fs=require('fs'); const a=fs.existsSync('changed_files.txt')?fs.readFileSync('changed_files.txt','utf8').split(/\r?\n/).filter(Boolean):[]; console.log(JSON.stringify(a));")
+          echo "files=$files_json" >> "$GITHUB_OUTPUT"
+
+      - name: Stamp dates (inline, BJ)
+        if: ${{ steps.changed.outputs.files != '[]' }}
+        shell: bash
+        env:
+          CHANGED_FILES_JSON: ${{ steps.changed.outputs.files }}
         run: |
           set -euo pipefail
 
           node <<'NODE'
           import fs from "node:fs/promises";
-          import path from "node:path";
           import { execFileSync } from "node:child_process";
           import matter from "gray-matter";
 
-          const BLOG_ROOT = "src/content/blog";
+          const files = JSON.parse(process.env.CHANGED_FILES_JSON || "[]");
+
           const BOT_NAME = "github-actions[bot]";
           const BOT_EMAIL_RE = /github-actions\[bot\]@users\.noreply\.github\.com/i;
 
@@ -65,15 +99,9 @@ jobs:
             return out.trim();
           }
 
-          function stripBOM(s) {
-            return s.replace(/^\uFEFF/, "");
-          }
-
-          function ltrimLeadingBlankLines(s) {
-            return s.replace(/^(?:[ \t]*\r?\n)+/, "");
-          }
-
-          function normalizeDelimWhitespaceAtTop(s) {
+          function stripBOM(s) { return s.replace(/^\uFEFF/, ""); }
+          function ltrimBlankLines(s) { return s.replace(/^(?:[ \t]*\r?\n)+/, ""); }
+          function normalizeTopDelims(s) {
             const lines = s.split(/\r?\n/);
             const limit = Math.min(lines.length, 300);
             for (let i = 0; i < limit; i++) {
@@ -82,18 +110,29 @@ jobs:
             return lines.join("\n");
           }
 
-          function parseFrontmatterRobust(raw) {
+          function parseRobust(raw) {
             let s = stripBOM(raw);
-            s = ltrimLeadingBlankLines(s);
-            s = normalizeDelimWhitespaceAtTop(s);
+            s = ltrimBlankLines(s);
+            s = normalizeTopDelims(s);
 
-            // 如果顶部不是 ---，认为没 frontmatter
-            if (!(/^---\n/.test(s) || s === "---" || s.startsWith("---\r\n"))) {
-              return { normalized: s, parsed: { data: {}, content: s } };
+            // 没有 frontmatter
+            if (!(/^---\n/.test(s) || s.startsWith("---\r\n"))) {
+              return { data: {}, content: s };
             }
 
-            const parsed = matter(s, { language: "yaml", delimiters: ["---", "---"] });
-            return { normalized: s, parsed };
+            const p1 = matter(s, { language: "yaml", delimiters: ["---", "---"] });
+            let data = { ...(p1.data || {}) };
+            let content = p1.content ?? "";
+
+            // 如果 content 又以 --- 开头，说明是“双 frontmatter 坏格式”
+            if (/^---\n/.test(content) || content.startsWith("---\r\n")) {
+              const p2 = matter(content, { language: "yaml", delimiters: ["---", "---"] });
+              // 合并策略：第二段（title/tags等）为主，第一段（日期）覆盖同名键
+              data = { ...(p2.data || {}), ...(p1.data || {}) };
+              content = p2.content ?? "";
+            }
+
+            return { data, content };
           }
 
           function hasNonEmpty(v) {
@@ -106,7 +145,7 @@ jobs:
             const out = sh("git", ["log", "--follow", "--diff-filter=A", "--format=%cI|%an|%ae", "--", file]);
             if (!out) return "";
             const lines = out.split("\n").filter(Boolean);
-            return lines[lines.length - 1]?.split("|")[0] || "";
+            return (lines[lines.length - 1]?.split("|")[0]) || "";
           }
 
           function gitLastHumanCommitISO(file) {
@@ -121,98 +160,57 @@ jobs:
               if (email && BOT_EMAIL_RE.test(email)) continue;
               return iso;
             }
-            // fallback：没有 human commit 就用最后一次任何提交
+            // fallback：没有 human 提交就用最后一次任何提交
             return lines[0]?.split("|")[0] || "";
           }
 
-          async function listFilesRecursive(dir) {
-            const out = [];
-            async function walk(d) {
-              const ents = await fs.readdir(d, { withFileTypes: true });
-              for (const e of ents) {
-                const p = path.join(d, e.name);
-                if (e.isDirectory()) await walk(p);
-                else if (e.isFile() && (p.endsWith(".md") || p.endsWith(".mdx"))) out.push(p);
-              }
+          let changed = 0;
+
+          for (const file of files) {
+            const raw = await fs.readFile(file, "utf8");
+            const rawNorm = normalizeTopDelims(ltrimBlankLines(stripBOM(raw))).replace(/\r\n/g, "\n");
+
+            const { data, content } = parseRobust(raw);
+
+            const firstISO = gitFirstCommitISO(file);
+            const lastISO  = gitLastHumanCommitISO(file);
+
+            if (!firstISO || !lastISO) {
+              console.log(`[SKIP] no git history: ${file}`);
+              continue;
             }
-            await walk(dir);
-            return out;
+
+            const firstBJ = toBJ(firstISO);
+            const lastBJ  = toBJ(lastISO);
+
+            // publishDate：只在缺失/空时写入（固定）
+            if (!hasNonEmpty(data.publishDate)) data.publishDate = firstBJ;
+
+            // updatedDate：每次同步到最后一次 human commit 时间
+            data.updatedDate = lastBJ;
+
+            // 重新生成“单一 frontmatter”
+            const out = matter.stringify(content, data, { language: "yaml" });
+            const finalText = normalizeTopDelims(ltrimBlankLines(stripBOM(out))).replace(/\r\n/g, "\n");
+
+            if (finalText !== rawNorm) {
+              await fs.writeFile(file, finalText, "utf8");
+              changed++;
+              console.log(`[OK]   ${file}`);
+              console.log(`       publishDate=${data.publishDate}`);
+              console.log(`       updatedDate=${data.updatedDate}`);
+            } else {
+              console.log(`[NOOP] ${file}`);
+            }
           }
 
-          async function main() {
-            const root = path.resolve(process.cwd(), BLOG_ROOT);
-            const files = await listFilesRecursive(root);
-            if (!files.length) {
-              console.log("No blog posts found.");
-              return;
-            }
-
-            let changed = 0;
-
-            for (const absFile of files) {
-              const file = path.relative(process.cwd(), absFile).replaceAll("\\", "/");
-              const raw = await fs.readFile(absFile, "utf8");
-
-              const { parsed } = parseFrontmatterRobust(raw);
-
-              // 第一层解析
-              let data = { ...(parsed.data || {}) };
-              let content = parsed.content ?? "";
-
-              // 如果 content 又以 --- 开头，说明是“双 frontmatter 坏格式”，第二次解析并合并
-              if (/^---\n/.test(content) || content.startsWith("---\r\n")) {
-                const second = matter(content, { language: "yaml", delimiters: ["---", "---"] });
-                // 合并：第二段提供 title/tags 等；第一段提供已有日期（若有）
-                data = { ...(second.data || {}), ...(parsed.data || {}) };
-                content = second.content ?? "";
-              }
-
-              const firstISO = gitFirstCommitISO(file);
-              const lastISO = gitLastHumanCommitISO(file);
-
-              if (!firstISO || !lastISO) {
-                console.log(`[SKIP] no git history: ${file}`);
-                continue;
-              }
-
-              const firstBJ = toBJ(firstISO);
-              const lastBJ = toBJ(lastISO);
-
-              if (!hasNonEmpty(data.publishDate)) data.publishDate = firstBJ;
-              data.updatedDate = lastBJ;
-
-              // 统一重建成“单一 frontmatter”
-              const out = matter.stringify(content, data, { language: "yaml" });
-              // gray-matter 输出自带 ---...---，我们再规范化一下分隔线 & BOM/空行
-              const finalText = normalizeDelimWhitespaceAtTop(ltrimLeadingBlankLines(stripBOM(out))).replace(/\r\n/g, "\n");
-
-              const rawNorm = normalizeDelimWhitespaceAtTop(ltrimLeadingBlankLines(stripBOM(raw))).replace(/\r\n/g, "\n");
-
-              if (finalText !== rawNorm) {
-                await fs.writeFile(absFile, finalText, "utf8");
-                changed++;
-                console.log(`[OK]  ${file}`);
-                console.log(`      publishDate=${data.publishDate}`);
-                console.log(`      updatedDate=${data.updatedDate}`);
-              } else {
-                console.log(`[NOOP] ${file}`);
-              }
-            }
-
-            console.log(`Done. Changed files: ${changed}`);
-          }
-
-          main().catch((e) => {
-            console.error(e);
-            process.exit(1);
-          });
+          console.log(`Done. Changed files: ${changed}`);
           NODE
 
       - name: Commit & push (if any)
         shell: bash
         run: |
           set -euo pipefail
-          BRANCH="${GITHUB_REF_NAME}"
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -225,5 +223,4 @@ jobs:
           fi
 
           git commit -m "chore: sync blog publishDate/updatedDate (BJ)"
-          git pull --rebase origin "$BRANCH"
-          git push origin HEAD:"$BRANCH"
+          git push
