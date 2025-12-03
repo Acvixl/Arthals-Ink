@@ -1,6 +1,6 @@
 ---
 publishDate: 2025-12-02T16:43:47+08:00
-updatedDate: 2025-12-03T23:21:12+08:00
+updatedDate: 2025-12-03T23:21:27+08:00
 ---
 
 ---
@@ -8,7 +8,7 @@ title: Paper-Hypergraph Neural Networks
 description: In this paper, we present a hypergraph neural networks (HGNN) framework for data representation learning, which can encode high-order data correlation in a hypergraph structure. Confronting the challenges of learning representation for complex data in real practice, we propose to incorporate such data structure in a hypergraph, which is more flexible on data modeling, especially when dealing with complex data. In this method, a hyperedge convolution operation is designed to handle the data correlation during representation learning. In this way, traditional hypergraph learning procedure can be conducted using hyperedge convolution operations efficiently. HGNN is able to learn the hidden layer representation considering the high-order data structure, which is a general framework considering the complex data correlations. We have conducted experiments on citation network classification and visual object recognition tasks and compared HGNN with graph convolutional networks and other traditional methods. Experimental results demonstrate that the proposed HGNN method outperforms recent state-of-the-art methods. We can also reveal from the results that the proposed HGNN is superior when dealing with multi-modal data compared with existing methods.
 
 publishDate: 2025-12-01
-updatedDate: 2025-12-03T23:21:12+08:00
+updatedDate: 2025-12-03T23:21:27+08:00
 tags:
   - AAAI_2019
   - hypergraph_neural_networks(HGNN)
@@ -5961,7 +5961,7 @@ SPACEGNN 提出了一种在**多几何空间（欧氏 / 双曲 / 球面等）中
 title: Paper-Hypergraph Neural Networks
 description: xxx
 publishDate: 2025-12-01
-updatedDate: 2025-12-03T23:21:12+08:00
+updatedDate: 2025-12-03T23:21:27+08:00
 tags:
   - AAAI_2019
   - hypergraph_neural_networks(HGNN)
