@@ -7,7 +7,7 @@ tags:
 language: 中文
 slug: mkdmv
 publishDate: 2024-12-12T23:09:28+08:00
-updatedDate: 2025-12-03T23:59:03+08:00
+updatedDate: 2025-12-04T00:05:53+08:00
 ---
 ## 🛠️ The Record of today's log
 df sssss
