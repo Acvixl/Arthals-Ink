@@ -1,8 +1,6 @@
 ---
 title: eve'rebr
 description: Record today's log
-publishDate: 
-updatedDate: 
 tags:
   - Today_log
   - pubData
