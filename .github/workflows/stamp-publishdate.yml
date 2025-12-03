@@ -3,6 +3,8 @@ name: Stamp blog publish/updated dates from git (BJ)
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     paths:
       - "src/content/blog/**/*.md"
       - "src/content/blog/**/*.mdx"
@@ -12,17 +14,17 @@ permissions:
 
 jobs:
   stamp:
-    # 防止 actions 自己提交后再次触发死循环
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout (full history)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: true
 
-      - name: Stamp publishDate (first commit) + updatedDate (last commit)
+      - name: Stamp dates (publish=first commit, updated=last commit)
         shell: bash
         run: |
           set -euo pipefail
@@ -34,22 +36,14 @@ jobs:
             exit 0
           fi
 
-          # 转北京时间（+08:00）
-          to_bj() {
-            TZ=Asia/Shanghai date -d "$1" +"%Y-%m-%dT%H:%M:%S%:z"
-          }
+          to_bj() { TZ=Asia/Shanghai date -d "$1" +"%Y-%m-%dT%H:%M:%S%:z"; }
 
           for file in "${files[@]}"; do
             echo "Processing $file"
-
-            # ✅ 彻底修复：统一去掉 CRLF 的 \r，避免 awk/grep/sed 匹配异常
             sed -i 's/\r$//' "$file"
 
-            # 首次提交时间（文件首次出现）
             first=$(git log --follow --diff-filter=A --format=%cI -- "$file" | tail -n 1 || true)
-            # 最后一次提交时间
             last=$(git log -1 --format=%cI -- "$file" || true)
-
             if [ -z "${first:-}" ] || [ -z "${last:-}" ]; then
               echo "No git history for $file, skip."
               continue
@@ -58,7 +52,7 @@ jobs:
             first_bj=$(to_bj "$first")
             last_bj=$(to_bj "$last")
 
-            # 如果没有 frontmatter，创建
+            # no frontmatter -> create
             if ! head -n 1 "$file" | grep -q '^---$'; then
               tmp=$(mktemp)
               {
@@ -72,7 +66,7 @@ jobs:
               continue
             fi
 
-            # publishDate：缺失或空值才写入（空值包括 publishDate: / "" / '' / 0）
+            # publishDate: missing or empty -> set once
             pub_state=$(awk '
               NR==1 {in=($0=="---"); next}
               in==1 && $0=="---" {exit 0}
@@ -101,7 +95,7 @@ jobs:
               mv "$tmp" "$file"
             fi
 
-            # updatedDate：每次都同步为最后一次提交时间（存在就替换，不存在就插入；支持缩进/空值）
+            # updatedDate: always sync
             if grep -q '^[[:space:]]*updatedDate:' "$file"; then
               sed -i "s/^[[:space:]]*updatedDate:.*/updatedDate: $last_bj/" "$file"
             else
@@ -114,16 +108,20 @@ jobs:
               mv "$tmp" "$file"
             fi
 
-            # 再跑一次 CRLF 清理，保证写回后文件干净
             sed -i 's/\r$//' "$file"
           done
 
-      - name: Commit changes (if any)
+      - name: Commit & push back
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add -A
+          # 只提交 blog 内容，避免无关文件造成冲突
+          git add src/content/blog/**/*.md src/content/blog/**/*.mdx || true
 
           if git diff --cached --quiet; then
             echo "No changes to commit."
@@ -131,4 +129,8 @@ jobs:
           fi
 
           git commit -m "chore: sync blog publishDate/updatedDate from git (BJ)"
-          git push
+
+          # 防止并发 push 冲突
+          git pull --rebase origin main
+
+          git push origin HEAD:main
