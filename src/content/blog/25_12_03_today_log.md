@@ -7,6 +7,10 @@ publishDate: 2024-07-26T16:44:14+08:00
 updatedDate: 2025-12-03T20:34:58+08:00
 ---
 ---
+publishDate: 2024-07-26T16:44:14+08:00
+updatedDate: 2025-12-03T20:34:58+08:00
+---
+---
 updatedDate: 2025-12-03T20:34:58+08:00
 title: 2025-12-03 Today Log
 description: Record today's log
@@ -41,7 +45,7 @@ slug: 25_12_13_today_log
    
 ```
 这是标题格式
-    ---
+---
 title: 2025-12-03 Today Log
 description: Record today's log
 publishDate: 
