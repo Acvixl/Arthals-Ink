@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   stamp:
-    # ✅ 防止 actions 自己 push 后再次触发死循环
+    # 防止 actions 自己提交后再次触发死循环
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
 
@@ -42,12 +42,14 @@ jobs:
           for file in "${files[@]}"; do
             echo "Processing $file"
 
+            # ✅ 彻底修复：统一去掉 CRLF 的 \r，避免 awk/grep/sed 匹配异常
+            sed -i 's/\r$//' "$file"
+
             # 首次提交时间（文件首次出现）
             first=$(git log --follow --diff-filter=A --format=%cI -- "$file" | tail -n 1 || true)
             # 最后一次提交时间
             last=$(git log -1 --format=%cI -- "$file" || true)
 
-            # 极少数情况：没有历史
             if [ -z "${first:-}" ] || [ -z "${last:-}" ]; then
               echo "No git history for $file, skip."
               continue
@@ -70,12 +72,7 @@ jobs:
               continue
             fi
 
-            # publishDate：缺失或空值才写入
-            # 空值包括：
-            # - publishDate:
-            # - publishDate: ""
-            # - publishDate: ''
-            # - publishDate: 0
+            # publishDate：缺失或空值才写入（空值包括 publishDate: / "" / '' / 0）
             pub_state=$(awk '
               NR==1 {in=($0=="---"); next}
               in==1 && $0=="---" {exit 0}
@@ -104,7 +101,7 @@ jobs:
               mv "$tmp" "$file"
             fi
 
-            # updatedDate：每次都同步为 last_bj（存在就替换，不存在就插入）
+            # updatedDate：每次都同步为最后一次提交时间（存在就替换，不存在就插入；支持缩进/空值）
             if grep -q '^[[:space:]]*updatedDate:' "$file"; then
               sed -i "s/^[[:space:]]*updatedDate:.*/updatedDate: $last_bj/" "$file"
             else
@@ -116,6 +113,9 @@ jobs:
               ' "$file" > "$tmp"
               mv "$tmp" "$file"
             fi
+
+            # 再跑一次 CRLF 清理，保证写回后文件干净
+            sed -i 's/\r$//' "$file"
           done
 
       - name: Commit changes (if any)
