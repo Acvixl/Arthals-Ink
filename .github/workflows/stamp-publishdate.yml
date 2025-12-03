@@ -22,7 +22,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Stamp dates (SAFE + normalize)
+      - name: Stamp dates (robust frontmatter)
         shell: bash
         run: |
           set -euo pipefail
@@ -34,6 +34,8 @@ jobs:
             exit 0
           fi
 
+          FM_DELIM_REGEX='^[[:space:]]*---[[:space:]]*$'
+
           to_bj() { TZ=Asia/Shanghai date -d "$1" +"%Y-%m-%dT%H:%M:%S%:z"; }
 
           last_human_commit_iso() {
@@ -41,43 +43,55 @@ jobs:
               | awk -F'|' '$2!="github-actions[bot]" && $3 !~ /github-actions\[bot\]@users\.noreply\.github\.com/ {print $1; exit}'
           }
 
-          # 去 BOM + 去开头空行（只影响文件最开头）
           normalize_leading() {
             local f="$1"
-            # 去 UTF-8 BOM（如果存在）
+            # 去 UTF-8 BOM
             sed -i '1s/^\xEF\xBB\xBF//' "$f"
             # 去 CRLF
             sed -i 's/\r$//' "$f"
-            # 去文件开头连续空行（直到遇到第一行非空）
-            awk 'BEGIN{start=1}
-                 start==1 && $0 ~ /^[[:space:]]*$/ {next}
-                 {start=0; print}' "$f" > "$f.__tmp__"
+            # 去文件开头连续空行/空白行
+            awk 'BEGIN{s=1}
+                 s==1 && $0 ~ /^[[:space:]]*$/ {next}
+                 {s=0; print}' "$f" > "$f.__tmp__"
             mv "$f.__tmp__" "$f"
           }
 
-          # 第一个非空行是否是 frontmatter 起始 ---
+          # 把“分隔线行”标准化成严格 `---`（只在文件开头前 300 行内做，防止误伤正文）
+          normalize_frontmatter_delims_near_top() {
+            local f="$1"
+            awk '
+              NR<=300 {
+                if ($0 ~ /^[[:space:]]*---[[:space:]]*$/) { print "---"; next }
+              }
+              { print }
+            ' "$f" > "$f.__tmp__"
+            mv "$f.__tmp__" "$f"
+          }
+
+          # 第一个非空行是否为 frontmatter 起始（允许空格）
           has_frontmatter() {
             awk '
               $0 ~ /^[[:space:]]*$/ {next}
-              { exit($0=="---"?0:1) }
-              END{ exit(1) }
+              { exit($0 ~ /^[[:space:]]*---[[:space:]]*$/ ? 0 : 1) }
+              END { exit(1) }
             ' "$1"
           }
 
-          # frontmatter 是否在前 300 行内闭合？（避免乱改坏文件）
+          # 顶部 frontmatter 是否闭合（前 300 行至少两条分隔线）
           frontmatter_closed_near_top() {
             local marks
-            marks=$(head -n 300 "$1" | grep -n '^---$' | wc -l | tr -d ' ')
+            marks=$(head -n 300 "$1" | awk '$0 ~ /^[[:space:]]*---[[:space:]]*$/ {c++} END{print c+0}')
             [ "$marks" -ge 2 ]
           }
 
-          # 前 300 行内是否出现第二段 frontmatter（>=4 个 ---）？出现就报错，防止再次毁文件
+          # 顶部是否出现第二段 frontmatter（>=4条分隔线）
           has_multiple_frontmatter_near_top() {
             local marks
-            marks=$(head -n 300 "$1" | grep -n '^---$' | wc -l | tr -d ' ')
+            marks=$(head -n 300 "$1" | awk '$0 ~ /^[[:space:]]*---[[:space:]]*$/ {c++} END{print c+0}')
             [ "$marks" -ge 4 ]
           }
 
+          # 提取顶部 frontmatter 内容（不含分隔线），默认在 normalize 后，分隔线就是 `---`
           extract_fm() {
             awk '
               NR==1 {inFM=($0=="---"); next}
@@ -86,6 +100,7 @@ jobs:
             ' "$1"
           }
 
+          # 提取正文（去掉顶部 frontmatter）
           extract_body() {
             awk '
               NR==1 {
@@ -115,8 +130,8 @@ jobs:
             echo "Processing $file"
 
             normalize_leading "$file"
+            normalize_frontmatter_delims_near_top "$file"
 
-            # git 时间
             first=$(git log --follow --diff-filter=A --format=%cI -- "$file" | tail -n 1 || true)
             last_human=$(last_human_commit_iso "$file" || true)
             last_any=$(git log -1 --format=%cI -- "$file" || true)
@@ -142,16 +157,16 @@ jobs:
               fi
 
               if has_multiple_frontmatter_near_top "$file"; then
-                echo "ERROR: Multiple frontmatter blocks near top. Please manually fix to a single frontmatter: $file"
+                echo "ERROR: Multiple frontmatter blocks near top. Please merge into one manually: $file"
                 exit 1
               fi
 
               fm="$(extract_fm "$file")"
               body="$(extract_body "$file")"
 
-              # publishDate：缺失/空才写入
+              # publishDate：缺失/空才写
               if printf "%s\n" "$fm" | fm_has_nonempty_key "publishDate"; then
-                : # 有值
+                :
               else
                 rc=$?
                 if [ "$rc" -ne 0 ]; then
@@ -159,7 +174,7 @@ jobs:
                 fi
               fi
 
-              # updatedDate：永远同步（删旧再插新到顶部）
+              # updatedDate：永远同步（删除旧行，插入新行到顶部）
               fm="$(printf "%s\n" "$fm" | awk '!($0 ~ /^[[:space:]]*updatedDate:/)')"
               fm="updatedDate: $last_bj"$'\n'"$fm"
 
@@ -172,7 +187,7 @@ jobs:
               } > "$tmp"
               mv "$tmp" "$file"
             else
-              # 没 frontmatter：创建一个
+              # 没 frontmatter：创建
               tmp=$(mktemp)
               {
                 echo "---"
@@ -185,6 +200,7 @@ jobs:
             fi
 
             normalize_leading "$file"
+            normalize_frontmatter_delims_near_top "$file"
           done
 
       - name: Commit & push (if any)
