@@ -22,7 +22,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Stamp dates (SAFE frontmatter)
+      - name: Stamp dates (SAFE + normalize)
         shell: bash
         run: |
           set -euo pipefail
@@ -36,35 +36,48 @@ jobs:
 
           to_bj() { TZ=Asia/Shanghai date -d "$1" +"%Y-%m-%dT%H:%M:%S%:z"; }
 
-          # 最近一次“非 bot”提交该文件的时间（作者/邮箱双保险）
           last_human_commit_iso() {
             git log --follow --format='%cI|%an|%ae' -- "$1" \
               | awk -F'|' '$2!="github-actions[bot]" && $3 !~ /github-actions\[bot\]@users\.noreply\.github\.com/ {print $1; exit}'
           }
 
-          # ---- frontmatter 安全解析：只看文件开头，且必须在前 200 行闭合 ----
-          must_have_valid_frontmatter_if_present() {
-            local file="$1"
-            # 如果第一行不是 ---，允许没有 frontmatter
-            if ! head -n 1 "$file" | grep -q '^---$'; then
-              return 0
-            fi
-            # 必须在前 200 行内找到第二个 ---
-            local marks
-            marks=$(head -n 200 "$file" | grep -n '^---$' | wc -l | tr -d ' ')
-            if [ "$marks" -lt 2 ]; then
-              echo "ERROR: Frontmatter not closed within first 200 lines: $file"
-              return 1
-            fi
-            # 如果前 200 行出现 >= 4 个 ---，说明有第二段 frontmatter，直接报错（避免破坏文件）
-            if [ "$marks" -ge 4 ]; then
-              echo "ERROR: Multiple frontmatter blocks detected near top (manual fix required): $file"
-              return 1
-            fi
-            return 0
+          # 去 BOM + 去开头空行（只影响文件最开头）
+          normalize_leading() {
+            local f="$1"
+            # 去 UTF-8 BOM（如果存在）
+            sed -i '1s/^\xEF\xBB\xBF//' "$f"
+            # 去 CRLF
+            sed -i 's/\r$//' "$f"
+            # 去文件开头连续空行（直到遇到第一行非空）
+            awk 'BEGIN{start=1}
+                 start==1 && $0 ~ /^[[:space:]]*$/ {next}
+                 {start=0; print}' "$f" > "$f.__tmp__"
+            mv "$f.__tmp__" "$f"
           }
 
-          # 取 frontmatter（仅开头那段，不含分隔线）
+          # 第一个非空行是否是 frontmatter 起始 ---
+          has_frontmatter() {
+            awk '
+              $0 ~ /^[[:space:]]*$/ {next}
+              { exit($0=="---"?0:1) }
+              END{ exit(1) }
+            ' "$1"
+          }
+
+          # frontmatter 是否在前 300 行内闭合？（避免乱改坏文件）
+          frontmatter_closed_near_top() {
+            local marks
+            marks=$(head -n 300 "$1" | grep -n '^---$' | wc -l | tr -d ' ')
+            [ "$marks" -ge 2 ]
+          }
+
+          # 前 300 行内是否出现第二段 frontmatter（>=4 个 ---）？出现就报错，防止再次毁文件
+          has_multiple_frontmatter_near_top() {
+            local marks
+            marks=$(head -n 300 "$1" | grep -n '^---$' | wc -l | tr -d ' ')
+            [ "$marks" -ge 4 ]
+          }
+
           extract_fm() {
             awk '
               NR==1 {inFM=($0=="---"); next}
@@ -73,7 +86,6 @@ jobs:
             ' "$1"
           }
 
-          # 取正文（去掉开头 frontmatter 块；如果没有 frontmatter，则正文=全文）
           extract_body() {
             awk '
               NR==1 {
@@ -85,7 +97,6 @@ jobs:
             ' "$1"
           }
 
-          # 在 frontmatter 文本里：检测 key 是否存在且非空（粗略判断）
           fm_has_nonempty_key() {
             local key="$1"
             awk -v k="$key" '
@@ -97,38 +108,15 @@ jobs:
                 exit 0
               }
               END {exit 2}
-            '  # 注意：这段 awk 从 stdin 读
-          }
-
-          # 在 frontmatter 文本里：替换或插入 key: value（插入到最前面更安全）
-          fm_upsert_key() {
-            local key="$1"
-            local val="$2"
-            awk -v k="$key" -v v="$val" '
-              BEGIN{done=0}
-              $0 ~ "^[[:space:]]*" k ":" {
-                if (!done) {
-                  print k ": " v
-                  done=1
-                }
-                next
-              }
-              {print}
-              END{
-                if(!done){
-                  # 插在开头
-                  # 这里我们没法回到开头，因此采用：输出时在 BEGIN 预插
-                }
-              }
             '
           }
 
           for file in "${files[@]}"; do
             echo "Processing $file"
-            sed -i 's/\r$//' "$file"
 
-            must_have_valid_frontmatter_if_present "$file"
+            normalize_leading "$file"
 
+            # git 时间
             first=$(git log --follow --diff-filter=A --format=%cI -- "$file" | tail -n 1 || true)
             last_human=$(last_human_commit_iso "$file" || true)
             last_any=$(git log -1 --format=%cI -- "$file" || true)
@@ -147,8 +135,44 @@ jobs:
             first_bj=$(to_bj "$first")
             last_bj=$(to_bj "$last_use")
 
-            if ! head -n 1 "$file" | grep -q '^---$'; then
-              # 没有 frontmatter：创建一个
+            if has_frontmatter "$file"; then
+              if ! frontmatter_closed_near_top "$file"; then
+                echo "ERROR: Frontmatter not closed within first 300 lines: $file"
+                exit 1
+              fi
+
+              if has_multiple_frontmatter_near_top "$file"; then
+                echo "ERROR: Multiple frontmatter blocks near top. Please manually fix to a single frontmatter: $file"
+                exit 1
+              fi
+
+              fm="$(extract_fm "$file")"
+              body="$(extract_body "$file")"
+
+              # publishDate：缺失/空才写入
+              if printf "%s\n" "$fm" | fm_has_nonempty_key "publishDate"; then
+                : # 有值
+              else
+                rc=$?
+                if [ "$rc" -ne 0 ]; then
+                  fm="publishDate: $first_bj"$'\n'"$fm"
+                fi
+              fi
+
+              # updatedDate：永远同步（删旧再插新到顶部）
+              fm="$(printf "%s\n" "$fm" | awk '!($0 ~ /^[[:space:]]*updatedDate:/)')"
+              fm="updatedDate: $last_bj"$'\n'"$fm"
+
+              tmp=$(mktemp)
+              {
+                echo "---"
+                printf "%s\n" "$fm"
+                echo "---"
+                printf "%s\n" "$body"
+              } > "$tmp"
+              mv "$tmp" "$file"
+            else
+              # 没 frontmatter：创建一个
               tmp=$(mktemp)
               {
                 echo "---"
@@ -158,41 +182,9 @@ jobs:
                 cat "$file"
               } > "$tmp"
               mv "$tmp" "$file"
-              continue
             fi
 
-            # 有合法 frontmatter：读出 frontmatter & body，然后“重建”文件（保证结构不会坏）
-            fm="$(extract_fm "$file")"
-            body="$(extract_body "$file")"
-
-            # publishDate：仅缺失/空 才写入
-            if ! printf "%s\n" "$fm" | fm_has_nonempty_key "publishDate"; then
-              : # OK，已有 publishDate
-            else
-              # awk exit code:
-              # 0=存在且非空；1=存在但空；2=缺失
-              rc=$?
-              if [ "$rc" -ne 0 ]; then
-                fm="publishDate: $first_bj"$'\n'"$fm"
-              fi
-            fi
-
-            # updatedDate：永远改成 last_bj（若存在就替换；不存在就插入到顶部）
-            # 先把旧的 updatedDate 行删掉
-            fm="$(printf "%s\n" "$fm" | awk '!($0 ~ /^[[:space:]]*updatedDate:/)')"
-            fm="updatedDate: $last_bj"$'\n'"$fm"
-
-            # 重建文件（只会有一个 frontmatter）
-            tmp=$(mktemp)
-            {
-              echo "---"
-              printf "%s\n" "$fm"
-              echo "---"
-              printf "%s\n" "$body"
-            } > "$tmp"
-            mv "$tmp" "$file"
-
-            sed -i 's/\r$//' "$file"
+            normalize_leading "$file"
           done
 
       - name: Commit & push (if any)
