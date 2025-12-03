@@ -36,6 +36,12 @@ jobs:
 
           to_bj() { TZ=Asia/Shanghai date -d "$1" +"%Y-%m-%dT%H:%M:%S%:z"; }
 
+          # 取“最近一次非本 workflow 写回”的提交时间（避免被 bot commit 污染）
+          last_real_commit_iso() {
+            git log --follow --format='%cI|%s' -- "$1" \
+              | awk -F'|' '$2 !~ /^chore: sync blog publishDate\/updatedDate from git/ {print $1; exit}'
+          }
+
           # 判断第一段 frontmatter 是否“只包含 publishDate/updatedDate/空行”
           first_fm_only_dates() {
             awk '
@@ -49,13 +55,13 @@ jobs:
             ' "$1"
           }
 
-          # 从第一段 frontmatter 抽取 publishDate/updatedDate（可能为空）
-          extract_first_dates() {
+          # 从第一段 frontmatter 抽取 publishDate（用于合并时保留旧 publish）
+          extract_first_publish() {
             awk '
               NR==1 {inFM=($0=="---"); next}
               inFM==1 && $0=="---" {exit 0}
-              inFM==1 && $0 ~ /^[[:space:]]*publishDate:/ {sub(/^[[:space:]]*publishDate:[ \t]*/, "", $0); print "PUBLISH=" $0}
-              inFM==1 && $0 ~ /^[[:space:]]*updatedDate:/ {sub(/^[[:space:]]*updatedDate:[ \t]*/, "", $0); print "UPDATED=" $0}
+              inFM==1 && $0 ~ /^[[:space:]]*publishDate:/ {sub(/^[[:space:]]*publishDate:[ \t]*/, "", $0); print $0; exit 0}
+              END {exit 0}
             ' "$1"
           }
 
@@ -116,20 +122,21 @@ jobs:
 
           for file in "${files[@]}"; do
             echo "Processing $file"
-
-            # CRLF 修复
             sed -i 's/\r$//' "$file"
 
-            # git 时间
+            # publish 用“首次添加该文件”的提交时间（不会被 bot 影响）
             first=$(git log --follow --diff-filter=A --format=%cI -- "$file" | tail -n 1 || true)
-            last=$(git log -1 --format=%cI -- "$file" || true)
-            if [ -z "${first:-}" ] || [ -z "${last:-}" ]; then
+
+            # updated 用“最近一次非 sync commit”的提交时间（关键修复点）
+            last_real=$(last_real_commit_iso "$file" || true)
+
+            if [ -z "${first:-}" ] || [ -z "${last_real:-}" ]; then
               echo "No git history for $file, skip."
               continue
             fi
 
             first_bj=$(to_bj "$first")
-            last_bj=$(to_bj "$last")
+            last_bj=$(to_bj "$last_real")
 
             # 无 frontmatter：直接创建
             if ! head -n 1 "$file" | grep -q '^---$'; then
@@ -151,14 +158,8 @@ jobs:
               if first_fm_only_dates "$file"; then
                 echo "Detected double frontmatter (first only dates). Auto-merging..."
 
-                pub_from_first=""
-                while IFS= read -r line; do
-                  case "$line" in
-                    PUBLISH=*) pub_from_first="${line#PUBLISH=}" ;;
-                  esac
-                done < <(extract_first_dates "$file")
+                pub_from_first="$(extract_first_publish "$file" || true)"
 
-                # 删除第一段 frontmatter
                 tmp=$(mktemp)
                 drop_first_frontmatter "$file" > "$tmp"
                 mv "$tmp" "$file"
@@ -168,8 +169,8 @@ jobs:
                   exit 1
                 fi
 
-                # publish 可沿用旧值；updated ✅永远用最新 last_bj
                 publish_merge="${pub_from_first:-$first_bj}"
+                # ✅ updated 永远用 last_bj（最近一次真实更新）
                 upsert_dates_into_first_fm "$file" "$publish_merge" "$last_bj"
               else
                 echo "ERROR: Multiple frontmatter blocks detected (not auto-fixable): $file"
@@ -178,9 +179,8 @@ jobs:
             fi
             # ===== 双 frontmatter 修复结束 =====
 
-            # 正常文件：写入/更新日期（updated 永远是 last_bj）
+            # 正常文件：写入/更新日期
             upsert_dates_into_first_fm "$file" "$first_bj" "$last_bj"
-
             sed -i 's/\r$//' "$file"
           done
 
