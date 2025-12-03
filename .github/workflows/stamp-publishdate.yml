@@ -1,4 +1,4 @@
-name: Stamp blog publish/updated dates from git (BJ)
+name: Stamp blog publish/updated dates (safe parser, BJ)
 
 on:
   workflow_dispatch:
@@ -12,6 +12,7 @@ permissions:
 
 jobs:
   stamp:
+    # 避免 bot 写回触发自身循环
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
 
@@ -22,186 +23,190 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Stamp dates (robust frontmatter)
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Stamp dates (inline script)
         shell: bash
         run: |
           set -euo pipefail
-          shopt -s globstar nullglob
 
-          files=(src/content/blog/**/*.md src/content/blog/**/*.mdx)
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "No blog posts found."
-            exit 0
-          fi
+          node <<'NODE'
+          import fs from "node:fs/promises";
+          import path from "node:path";
+          import { execFileSync } from "node:child_process";
+          import matter from "gray-matter";
 
-          FM_DELIM_REGEX='^[[:space:]]*---[[:space:]]*$'
+          const BLOG_ROOT = "src/content/blog";
+          const BOT_NAME = "github-actions[bot]";
+          const BOT_EMAIL_RE = /github-actions\[bot\]@users\.noreply\.github\.com/i;
 
-          to_bj() { TZ=Asia/Shanghai date -d "$1" +"%Y-%m-%dT%H:%M:%S%:z"; }
-
-          last_human_commit_iso() {
-            git log --follow --format='%cI|%an|%ae' -- "$1" \
-              | awk -F'|' '$2!="github-actions[bot]" && $3 !~ /github-actions\[bot\]@users\.noreply\.github\.com/ {print $1; exit}'
+          function sh(cmd, args) {
+            return execFileSync(cmd, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
           }
 
-          normalize_leading() {
-            local f="$1"
-            # 去 UTF-8 BOM
-            sed -i '1s/^\xEF\xBB\xBF//' "$f"
-            # 去 CRLF
-            sed -i 's/\r$//' "$f"
-            # 去文件开头连续空行/空白行
-            awk 'BEGIN{s=1}
-                 s==1 && $0 ~ /^[[:space:]]*$/ {next}
-                 {s=0; print}' "$f" > "$f.__tmp__"
-            mv "$f.__tmp__" "$f"
+          function toBJ(iso) {
+            const out = execFileSync(
+              "bash",
+              ["-lc", `TZ=Asia/Shanghai date -d "${iso}" +"%Y-%m-%dT%H:%M:%S%:z"`],
+              { encoding: "utf8" }
+            );
+            return out.trim();
           }
 
-          # 把“分隔线行”标准化成严格 `---`（只在文件开头前 300 行内做，防止误伤正文）
-          normalize_frontmatter_delims_near_top() {
-            local f="$1"
-            awk '
-              NR<=300 {
-                if ($0 ~ /^[[:space:]]*---[[:space:]]*$/) { print "---"; next }
+          function stripBOM(s) {
+            return s.replace(/^\uFEFF/, "");
+          }
+
+          function ltrimLeadingBlankLines(s) {
+            return s.replace(/^(?:[ \t]*\r?\n)+/, "");
+          }
+
+          function normalizeDelimWhitespaceAtTop(s) {
+            const lines = s.split(/\r?\n/);
+            const limit = Math.min(lines.length, 300);
+            for (let i = 0; i < limit; i++) {
+              if (/^[ \t]*---[ \t]*$/.test(lines[i])) lines[i] = "---";
+            }
+            return lines.join("\n");
+          }
+
+          function parseFrontmatterRobust(raw) {
+            let s = stripBOM(raw);
+            s = ltrimLeadingBlankLines(s);
+            s = normalizeDelimWhitespaceAtTop(s);
+
+            // 如果顶部不是 ---，认为没 frontmatter
+            if (!(/^---\n/.test(s) || s === "---" || s.startsWith("---\r\n"))) {
+              return { normalized: s, parsed: { data: {}, content: s } };
+            }
+
+            const parsed = matter(s, { language: "yaml", delimiters: ["---", "---"] });
+            return { normalized: s, parsed };
+          }
+
+          function hasNonEmpty(v) {
+            if (v == null) return false;
+            if (typeof v === "string") return v.trim().length > 0;
+            return true;
+          }
+
+          function gitFirstCommitISO(file) {
+            const out = sh("git", ["log", "--follow", "--diff-filter=A", "--format=%cI|%an|%ae", "--", file]);
+            if (!out) return "";
+            const lines = out.split("\n").filter(Boolean);
+            return lines[lines.length - 1]?.split("|")[0] || "";
+          }
+
+          function gitLastHumanCommitISO(file) {
+            const out = sh("git", ["log", "--follow", "--format=%cI|%an|%ae", "--", file]);
+            if (!out) return "";
+            const lines = out.split("\n").filter(Boolean);
+
+            for (const line of lines) {
+              const [iso, name, email] = line.split("|");
+              if (!iso) continue;
+              if (name === BOT_NAME) continue;
+              if (email && BOT_EMAIL_RE.test(email)) continue;
+              return iso;
+            }
+            // fallback：没有 human commit 就用最后一次任何提交
+            return lines[0]?.split("|")[0] || "";
+          }
+
+          async function listFilesRecursive(dir) {
+            const out = [];
+            async function walk(d) {
+              const ents = await fs.readdir(d, { withFileTypes: true });
+              for (const e of ents) {
+                const p = path.join(d, e.name);
+                if (e.isDirectory()) await walk(p);
+                else if (e.isFile() && (p.endsWith(".md") || p.endsWith(".mdx"))) out.push(p);
               }
-              { print }
-            ' "$f" > "$f.__tmp__"
-            mv "$f.__tmp__" "$f"
+            }
+            await walk(dir);
+            return out;
           }
 
-          # 第一个非空行是否为 frontmatter 起始（允许空格）
-          has_frontmatter() {
-            awk '
-              $0 ~ /^[[:space:]]*$/ {next}
-              { exit($0 ~ /^[[:space:]]*---[[:space:]]*$/ ? 0 : 1) }
-              END { exit(1) }
-            ' "$1"
-          }
+          async function main() {
+            const root = path.resolve(process.cwd(), BLOG_ROOT);
+            const files = await listFilesRecursive(root);
+            if (!files.length) {
+              console.log("No blog posts found.");
+              return;
+            }
 
-          # 顶部 frontmatter 是否闭合（前 300 行至少两条分隔线）
-          frontmatter_closed_near_top() {
-            local marks
-            marks=$(head -n 300 "$1" | awk '$0 ~ /^[[:space:]]*---[[:space:]]*$/ {c++} END{print c+0}')
-            [ "$marks" -ge 2 ]
-          }
+            let changed = 0;
 
-          # 顶部是否出现第二段 frontmatter（>=4条分隔线）
-          has_multiple_frontmatter_near_top() {
-            local marks
-            marks=$(head -n 300 "$1" | awk '$0 ~ /^[[:space:]]*---[[:space:]]*$/ {c++} END{print c+0}')
-            [ "$marks" -ge 4 ]
-          }
+            for (const absFile of files) {
+              const file = path.relative(process.cwd(), absFile).replaceAll("\\", "/");
+              const raw = await fs.readFile(absFile, "utf8");
 
-          # 提取顶部 frontmatter 内容（不含分隔线），默认在 normalize 后，分隔线就是 `---`
-          extract_fm() {
-            awk '
-              NR==1 {inFM=($0=="---"); next}
-              inFM==1 && $0=="---" {exit 0}
-              inFM==1 {print}
-            ' "$1"
-          }
+              const { parsed } = parseFrontmatterRobust(raw);
 
-          # 提取正文（去掉顶部 frontmatter）
-          extract_body() {
-            awk '
-              NR==1 {
-                if ($0!="---") {print; next}
-                inFM=1; next
+              // 第一层解析
+              let data = { ...(parsed.data || {}) };
+              let content = parsed.content ?? "";
+
+              // 如果 content 又以 --- 开头，说明是“双 frontmatter 坏格式”，第二次解析并合并
+              if (/^---\n/.test(content) || content.startsWith("---\r\n")) {
+                const second = matter(content, { language: "yaml", delimiters: ["---", "---"] });
+                // 合并：第二段提供 title/tags 等；第一段提供已有日期（若有）
+                data = { ...(second.data || {}), ...(parsed.data || {}) };
+                content = second.content ?? "";
               }
-              inFM==1 && $0=="---" {inFM=0; next}
-              inFM!=1 {print}
-            ' "$1"
-          }
 
-          fm_has_nonempty_key() {
-            local key="$1"
-            awk -v k="$key" '
-              $0 ~ "^[[:space:]]*" k ":" {
-                line=$0
-                sub("^[[:space:]]*" k ":[ \t]*", "", line)
-                gsub(/[ \t]/, "", line)
-                if (line=="" || line=="\"\"" || line=="'\'''\''") exit 1
-                exit 0
+              const firstISO = gitFirstCommitISO(file);
+              const lastISO = gitLastHumanCommitISO(file);
+
+              if (!firstISO || !lastISO) {
+                console.log(`[SKIP] no git history: ${file}`);
+                continue;
               }
-              END {exit 2}
-            '
+
+              const firstBJ = toBJ(firstISO);
+              const lastBJ = toBJ(lastISO);
+
+              if (!hasNonEmpty(data.publishDate)) data.publishDate = firstBJ;
+              data.updatedDate = lastBJ;
+
+              // 统一重建成“单一 frontmatter”
+              const out = matter.stringify(content, data, { language: "yaml" });
+              // gray-matter 输出自带 ---...---，我们再规范化一下分隔线 & BOM/空行
+              const finalText = normalizeDelimWhitespaceAtTop(ltrimLeadingBlankLines(stripBOM(out))).replace(/\r\n/g, "\n");
+
+              const rawNorm = normalizeDelimWhitespaceAtTop(ltrimLeadingBlankLines(stripBOM(raw))).replace(/\r\n/g, "\n");
+
+              if (finalText !== rawNorm) {
+                await fs.writeFile(absFile, finalText, "utf8");
+                changed++;
+                console.log(`[OK]  ${file}`);
+                console.log(`      publishDate=${data.publishDate}`);
+                console.log(`      updatedDate=${data.updatedDate}`);
+              } else {
+                console.log(`[NOOP] ${file}`);
+              }
+            }
+
+            console.log(`Done. Changed files: ${changed}`);
           }
 
-          for file in "${files[@]}"; do
-            echo "Processing $file"
-
-            normalize_leading "$file"
-            normalize_frontmatter_delims_near_top "$file"
-
-            first=$(git log --follow --diff-filter=A --format=%cI -- "$file" | tail -n 1 || true)
-            last_human=$(last_human_commit_iso "$file" || true)
-            last_any=$(git log -1 --format=%cI -- "$file" || true)
-
-            if [ -z "${first:-}" ]; then
-              echo "No git history for $file, skip."
-              continue
-            fi
-
-            last_use="${last_human:-$last_any}"
-            if [ -z "${last_use:-}" ]; then
-              echo "No usable last commit for $file, skip."
-              continue
-            fi
-
-            first_bj=$(to_bj "$first")
-            last_bj=$(to_bj "$last_use")
-
-            if has_frontmatter "$file"; then
-              if ! frontmatter_closed_near_top "$file"; then
-                echo "ERROR: Frontmatter not closed within first 300 lines: $file"
-                exit 1
-              fi
-
-              if has_multiple_frontmatter_near_top "$file"; then
-                echo "ERROR: Multiple frontmatter blocks near top. Please merge into one manually: $file"
-                exit 1
-              fi
-
-              fm="$(extract_fm "$file")"
-              body="$(extract_body "$file")"
-
-              # publishDate：缺失/空才写
-              if printf "%s\n" "$fm" | fm_has_nonempty_key "publishDate"; then
-                :
-              else
-                rc=$?
-                if [ "$rc" -ne 0 ]; then
-                  fm="publishDate: $first_bj"$'\n'"$fm"
-                fi
-              fi
-
-              # updatedDate：永远同步（删除旧行，插入新行到顶部）
-              fm="$(printf "%s\n" "$fm" | awk '!($0 ~ /^[[:space:]]*updatedDate:/)')"
-              fm="updatedDate: $last_bj"$'\n'"$fm"
-
-              tmp=$(mktemp)
-              {
-                echo "---"
-                printf "%s\n" "$fm"
-                echo "---"
-                printf "%s\n" "$body"
-              } > "$tmp"
-              mv "$tmp" "$file"
-            else
-              # 没 frontmatter：创建
-              tmp=$(mktemp)
-              {
-                echo "---"
-                echo "publishDate: $first_bj"
-                echo "updatedDate: $last_bj"
-                echo "---"
-                cat "$file"
-              } > "$tmp"
-              mv "$tmp" "$file"
-            fi
-
-            normalize_leading "$file"
-            normalize_frontmatter_delims_near_top "$file"
-          done
+          main().catch((e) => {
+            console.error(e);
+            process.exit(1);
+          });
+          NODE
 
       - name: Commit & push (if any)
         shell: bash
@@ -219,6 +224,6 @@ jobs:
             exit 0
           fi
 
-          git commit -m "chore: sync blog publishDate/updatedDate from git (BJ)"
+          git commit -m "chore: sync blog publishDate/updatedDate (BJ)"
           git pull --rebase origin "$BRANCH"
           git push origin HEAD:"$BRANCH"
