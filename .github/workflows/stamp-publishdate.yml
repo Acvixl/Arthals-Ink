@@ -39,6 +39,7 @@ jobs:
               | awk -F'|' '$2!="github-actions[bot]" && $3 !~ /github-actions\[bot\]@users\.noreply\.github\.com/ {print $1; exit}'
           }
 
+          # 第一段 frontmatter 是否只含日期字段
           first_fm_only_dates() {
             awk '
               NR==1 {inFM=($0=="---"); next}
@@ -51,6 +52,7 @@ jobs:
             ' "$1"
           }
 
+          # 抽取第一段 publishDate（用于合并时保留旧 publish）
           extract_first_publish() {
             awk '
               NR==1 {inFM=($0=="---"); next}
@@ -60,6 +62,7 @@ jobs:
             ' "$1"
           }
 
+          # 删除第一段 frontmatter（文件开头第一对 ---...---）
           drop_first_frontmatter() {
             awk '
               NR==1 {inFM=($0=="---"); if (!inFM) {print; next} next}
@@ -68,6 +71,7 @@ jobs:
             ' "$1"
           }
 
+          # 写入/更新 publish & updated 到当前文件“第一段 frontmatter”
           upsert_dates_into_first_fm() {
             local file="$1"
             local publish="$2"
@@ -125,7 +129,6 @@ jobs:
               continue
             fi
 
-            # human 拿不到就回退 last_any，保证总有值
             last_use="${last_human:-$last_any}"
             if [ -z "${last_use:-}" ]; then
               echo "No usable last commit for $file, skip."
@@ -151,7 +154,9 @@ jobs:
               } > "$tmp"
               mv "$tmp" "$file"
             else
-              fm_marks=$(grep -c '^---$' "$file" || true)
+              # ✅ 关键修复：只在文件开头 200 行内检查是否存在第二个 frontmatter
+              fm_marks=$(head -n 200 "$file" | grep -c '^---$' || true)
+
               if [ "${fm_marks:-0}" -ge 4 ]; then
                 if first_fm_only_dates "$file"; then
                   echo "Detected double frontmatter (first only dates). Auto-merging..."
@@ -170,7 +175,6 @@ jobs:
               fi
             fi
 
-            # 打印 frontmatter 验证写入结果
             echo "--- frontmatter now ---"
             awk 'NR==1{p=($0=="---")} p{print} NR>1 && p && $0=="---"{exit 0}' "$file"
           done
