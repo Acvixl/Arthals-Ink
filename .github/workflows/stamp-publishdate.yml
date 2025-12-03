@@ -28,9 +28,6 @@ jobs:
           set -euo pipefail
           shopt -s globstar nullglob
 
-          # 当前分支名（兼容 main/master/其它）
-          BRANCH="${GITHUB_REF_NAME}"
-
           files=(src/content/blog/**/*.md src/content/blog/**/*.mdx)
           if [ ${#files[@]} -eq 0 ]; then
             echo "No blog posts found."
@@ -41,8 +38,6 @@ jobs:
 
           for file in "${files[@]}"; do
             echo "Processing $file"
-
-            # CRLF 修复
             sed -i 's/\r$//' "$file"
 
             first=$(git log --follow --diff-filter=A --format=%cI -- "$file" | tail -n 1 || true)
@@ -55,7 +50,7 @@ jobs:
             first_bj=$(to_bj "$first")
             last_bj=$(to_bj "$last")
 
-            # 没有 frontmatter 就创建
+            # no frontmatter -> create
             if ! head -n 1 "$file" | grep -q '^---$'; then
               tmp=$(mktemp)
               {
@@ -69,43 +64,43 @@ jobs:
               continue
             fi
 
-            # publishDate：缺失则插入；存在但空则替换；存在有值则不动
-            if ! awk '
-              NR==1 {in=($0=="---"); next}
-              in==1 && $0=="---" {exit 0}
-              in==1 && $0 ~ /^[[:space:]]*publishDate:/ {
-                line=$0
-                sub(/^[[:space:]]*publishDate:[ \t]*/, "", line)
-                gsub(/[ \t]/, "", line)
-                if (line=="" || line=="\"\"" || line=="'\'''\''" || line=="0") exit 2
-                exit 0
+            # publishDate: missing or empty -> set once
+            pub_state=$(awk '
+              NR==1 {inFM=($0=="---"); next}
+              inFM==1 && $0=="---" {exit 0}
+              inFM==1 && $0 ~ /^[[:space:]]*publishDate:/ {
+                sub(/^[[:space:]]*publishDate:[ \t]*/, "", $0)
+                gsub(/[ \t]/, "", $0)
+                if ($0=="" || $0=="\"\"" || $0=="'\'''\''" || $0=="0") { print "EMPTY"; exit 0 }
+                print "OK"; exit 0
               }
-              END {exit 1}
-            ' "$file"; then
-              status=$?
-              if [ $status -eq 1 ]; then
-                # missing -> insert
-                tmp=$(mktemp)
-                awk -v first="$first_bj" '
-                  NR==1 {print; in=1; next}
-                  in==1 && $0=="---" {print "publishDate: " first; print; in=0; next}
-                  {print}
-                ' "$file" > "$tmp"
-                mv "$tmp" "$file"
-              elif [ $status -eq 2 ]; then
-                # empty -> replace
-                sed -i "s/^[[:space:]]*publishDate:.*/publishDate: $first_bj/" "$file"
-              fi
+              END { print "MISSING" }
+            ' "$file")
+
+            if [ "$pub_state" = "MISSING" ] || [ "$pub_state" = "EMPTY" ]; then
+              tmp=$(mktemp)
+              awk -v first="$first_bj" -v state="$pub_state" '
+                NR==1 {print; inFM=1; next}
+                inFM==1 && $0=="---" {
+                  if (state=="MISSING") print "publishDate: " first
+                  print
+                  inFM=0
+                  next
+                }
+                state=="EMPTY" && inFM==1 && $0 ~ /^[[:space:]]*publishDate:/ { print "publishDate: " first; next }
+                {print}
+              ' "$file" > "$tmp"
+              mv "$tmp" "$file"
             fi
 
-            # updatedDate：永远替换/插入
+            # updatedDate: always sync
             if grep -q '^[[:space:]]*updatedDate:' "$file"; then
               sed -i "s/^[[:space:]]*updatedDate:.*/updatedDate: $last_bj/" "$file"
             else
               tmp=$(mktemp)
               awk -v last="$last_bj" '
-                NR==1 {print; in=1; next}
-                in==1 && $0=="---" {print "updatedDate: " last; print; in=0; next}
+                NR==1 {print; inFM=1; next}
+                inFM==1 && $0=="---" {print "updatedDate: " last; print; inFM=0; next}
                 {print}
               ' "$file" > "$tmp"
               mv "$tmp" "$file"
@@ -134,5 +129,4 @@ jobs:
 
           # 防并发冲突
           git pull --rebase origin "$BRANCH"
-
           git push origin HEAD:"$BRANCH"
