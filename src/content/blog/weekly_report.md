@@ -1,13 +1,13 @@
-
 ---
 title: Weekly Report
 description: Display weekly reports.Only for record keeping purposes
-
 tags:
   - Weekly_Report
   - Group_Meeting
 language: 中文
 slug: Weeklyreport
+publishDate: '2025-12-03T13:28:12+08:00'
+updatedDate: '2025-12-04T00:23:37+08:00'
 ---
 ## 🛠️ 2025-12-03
 

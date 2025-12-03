@@ -1,14 +1,14 @@
-
 ---
 title: 主题上手指南
-
 draft: true
 tags:
   - 博客主题
   - 指南
 slug: theme-guide
-language: '中文'
+language: 中文
 description: 基于Astro的静态博客主题上手指南，介绍主题配置与新文章创建，快速搭建个人博客。
+publishDate: '2025-09-08T23:20:36+08:00'
+updatedDate: '2025-12-04T00:25:25+08:00'
 ---
 
 Retypeset 是一款基于 [Astro](https://astro.build/) 框架的静态博客主题，中文名为重新编排。本文为 Retypeset 主题上手指南，主要介绍如何修改主题配置与创建新文章，来帮助你快速搭建个人博客。
