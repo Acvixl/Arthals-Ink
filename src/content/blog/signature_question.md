@@ -1,7 +1,3 @@
----
-publishDate: 2025-12-03T15:31:41+08:00
-updatedDate: 2025-12-03T23:26:10+08:00
----
 
 ---
 title: Signature Question
