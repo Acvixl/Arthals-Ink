@@ -50,7 +50,6 @@ jobs:
             first_bj=$(to_bj "$first")
             last_bj=$(to_bj "$last")
 
-            # no frontmatter -> create
             if ! head -n 1 "$file" | grep -q '^---$'; then
               tmp=$(mktemp)
               {
@@ -64,7 +63,6 @@ jobs:
               continue
             fi
 
-            # publishDate: missing or empty -> set once
             pub_state=$(awk '
               NR==1 {inFM=($0=="---"); next}
               inFM==1 && $0=="---" {exit 0}
@@ -93,7 +91,6 @@ jobs:
               mv "$tmp" "$file"
             fi
 
-            # updatedDate: always sync
             if grep -q '^[[:space:]]*updatedDate:' "$file"; then
               sed -i "s/^[[:space:]]*updatedDate:.*/updatedDate: $last_bj/" "$file"
             else
@@ -109,6 +106,10 @@ jobs:
             sed -i 's/\r$//' "$file"
           done
 
+          # 🔎 可选：打印一下确认确实写进去了
+          echo "==== After stamping (sample) ===="
+          head -n 20 "${files[0]}" || true
+
       - name: Commit & push
         shell: bash
         run: |
@@ -118,15 +119,16 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add src/content/blog/**/*.md src/content/blog/**/*.mdx || true
+          # ✅ 关键修复：不要用 ** glob，直接 add 全部改动
+          git add -A
 
           if git diff --cached --quiet; then
             echo "No changes to commit."
+            # 额外输出一下：看看是不是工作区有改动但没进 staging（一般不会了）
+            git status --porcelain
             exit 0
           fi
 
           git commit -m "chore: sync blog publishDate/updatedDate from git (BJ)"
-
-          # 防并发冲突
           git pull --rebase origin "$BRANCH"
           git push origin HEAD:"$BRANCH"
