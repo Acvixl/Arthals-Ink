@@ -1,7 +1,7 @@
-name: Stamp blog publish/updated dates from git
+name: Stamp blog publish/updated dates from git (BJ)
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: {}
   push:
     paths:
       - "src/content/blog/**/*.md"
@@ -12,13 +12,16 @@ permissions:
 
 jobs:
   stamp:
+    # ✅ 防止 actions 自己提交后再次触发导致死循环
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Stamp publishDate (first commit) + updatedDate (last commit)
+      - name: Stamp publishDate (first commit) + updatedDate (last commit) in Asia/Shanghai
         shell: bash
         run: |
           set -euo pipefail
@@ -30,27 +33,36 @@ jobs:
             exit 0
           fi
 
+          to_bj() {
+            # 输入：任意带时区的 ISO（如 git %cI/%aI 输出）
+            # 输出：北京时间 ISO（带 +08:00）
+            # Ubuntu 的 GNU date 支持 -d
+            TZ=Asia/Shanghai date -d "$1" +"%Y-%m-%dT%H:%M:%S%:z"
+          }
+
           for file in "${files[@]}"; do
             echo "Processing $file"
 
-            # 取第一次提交时间（文件首次出现）
+            # 首次提交时间（文件首次出现）
             first=$(git log --follow --diff-filter=A --format=%cI -- "$file" | tail -n 1 || true)
-            # 取最后一次提交时间
+            # 最后一次提交时间
             last=$(git log -1 --format=%cI -- "$file" || true)
 
-            # 如果文件还没进 git 历史（极少数情况），跳过
             if [ -z "${first:-}" ] || [ -z "${last:-}" ]; then
               echo "No git history for $file, skip."
               continue
             fi
+
+            first_bj=$(to_bj "$first")
+            last_bj=$(to_bj "$last")
 
             # 如果没有 frontmatter，创建
             if ! head -n 1 "$file" | grep -q '^---$'; then
               tmp=$(mktemp)
               {
                 echo "---"
-                echo "publishDate: $first"
-                echo "updatedDate: $last"
+                echo "publishDate: $first_bj"
+                echo "updatedDate: $last_bj"
                 echo "---"
                 cat "$file"
               } > "$tmp"
@@ -58,28 +70,45 @@ jobs:
               continue
             fi
 
-            # publishDate 只在缺失时写入
-            if ! awk '
+            # 判定 publishDate 是否“缺失或空值”
+            # 空值包括：publishDate:    / publishDate: "" / publishDate: '' / publishDate: 0
+            pub_state=$(awk '
               NR==1 {in=($0=="---"); next}
               in==1 && $0=="---" {exit 0}
-              in==1 && $0 ~ /^publishDate:/ {found=1}
-              END {exit(found?0:1)}
-            ' "$file"; then
+              in==1 && $0 ~ /^publishDate:/ {
+                sub(/^publishDate:[ \t]*/, "", $0)
+                gsub(/[ \t]/, "", $0)
+                if ($0=="" || $0=="\"\"" || $0=="'\'''\''" || $0=="0") { print "EMPTY"; exit 0 }
+                print "OK"; exit 0
+              }
+              END { print "MISSING" }
+            ' "$file")
+
+            if [ "$pub_state" = "MISSING" ] || [ "$pub_state" = "EMPTY" ]; then
               tmp=$(mktemp)
-              awk -v first="$first" '
+              awk -v first="$first_bj" -v state="$pub_state" '
                 NR==1 {print; in=1; next}
-                in==1 && $0=="---" {print "publishDate: " first; print; in=0; next}
+                in==1 && $0=="---" {
+                  if (state=="MISSING") print "publishDate: " first
+                  print
+                  in=0
+                  next
+                }
+                # 如果是 EMPTY，则替换空行
+                state=="EMPTY" && in==1 && $0 ~ /^publishDate:/ { print "publishDate: " first; next }
                 {print}
               ' "$file" > "$tmp"
               mv "$tmp" "$file"
             fi
 
-            # updatedDate 每次都同步为最后一次提交时间（存在就替换，不存在就插入）
+            # updatedDate：每次都同步为最后一次提交时间
+            # 若为空值、缺失、有值全部统一写入 last_bj
             if grep -q '^updatedDate:' "$file"; then
-              sed -i "s/^updatedDate:.*/updatedDate: $last/" "$file"
+              # 替换整行（包括空值情况）
+              sed -i "s/^updatedDate:.*/updatedDate: $last_bj/" "$file"
             else
               tmp=$(mktemp)
-              awk -v last="$last" '
+              awk -v last="$last_bj" '
                 NR==1 {print; in=1; next}
                 in==1 && $0=="---" {print "updatedDate: " last; print; in=0; next}
                 {print}
@@ -92,6 +121,13 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git diff --cached --quiet || git commit -m "chore: sync blog publishDate/updatedDate from git"
+
+          git add src/content/blog/**/*.md src/content/blog/**/*.mdx || true
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "chore: sync blog publishDate/updatedDate from git (BJ)"
           git push
