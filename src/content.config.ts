@@ -8,8 +8,15 @@ function removeDupsAndLowerCase(array: string[]) {
   return Array.from(distinctItems)
 }
 
+/**
+ * Frontmatter 里最坑的就是：
+ * publishDate:   （空）
+ * updatedDate:   （空）
+ * 或者 0 / "0" / ""
+ * 这些会导致 z.coerce.date() 解析成 Invalid Date 或 epoch(1970)
+ * 所以统一先过滤为 undefined。
+ */
 function normalizeEmptyDate(v: unknown) {
-  // 防止 "" / null / undefined / 0 / "0" 被 z.coerce.date() 转成 1970
   if (v === '' || v == null) return undefined
   if (v === 0 || v === '0') return undefined
   if (typeof v === 'string' && v.trim() === '') return undefined
@@ -21,7 +28,7 @@ const optionalDateSchema = z.preprocess(
   z.coerce.date().optional()
 )
 
-// Define blog collection
+// -------------------- Blog collection --------------------
 const blog = defineCollection({
   loader: glob({ base: './src/content/blog', pattern: '**/*.{md,mdx}' }),
   schema: ({ image }) =>
@@ -30,7 +37,7 @@ const blog = defineCollection({
         title: z.string().max(60),
         description: z.string().max(1600),
 
-        // ✅ 允许不写：Action 会写回；写回前也不让构建挂
+        // ✅ 允许缺失/空：workflow 会写回；构建期也不会炸
         publishDate: optionalDateSchema,
         updatedDate: optionalDateSchema,
 
@@ -52,7 +59,9 @@ const blog = defineCollection({
         slug: z.string().optional()
       })
       .transform((data) => {
-        // ✅ 在脚本写回前的兜底：避免 undefined/1970 导致页面或 TS 报错
+        // ✅ 最终保证 publishDate/updatedDate 都是 Date
+        // workflow 写回前：publishDate 缺失 -> new Date() 临时兜底（可能随构建变化）
+        // workflow 写回后：publishDate 已固定 -> 不再变化
         const publish = data.publishDate ?? new Date()
         const update = data.updatedDate ?? publish
         return {
@@ -63,7 +72,7 @@ const blog = defineCollection({
       })
 })
 
-// Define docs collection
+// -------------------- Docs collection --------------------
 const docs = defineCollection({
   loader: glob({ base: './src/content/docs', pattern: '**/*.{md,mdx}' }),
   schema: () =>
@@ -72,6 +81,7 @@ const docs = defineCollection({
         title: z.string().max(60),
         description: z.string().max(1600),
 
+        // docs 同样容错（你 workflow 目前只写 blog；docs 将来要写也兼容）
         publishDate: optionalDateSchema,
         updatedDate: optionalDateSchema,
 
