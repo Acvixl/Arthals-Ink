@@ -1,7 +1,4 @@
----
-publishDate: 2025-12-03T13:28:12+08:00
-updatedDate: 2025-12-04T00:14:15+08:00
----
+
 
 ---
 title: Weekly Report
