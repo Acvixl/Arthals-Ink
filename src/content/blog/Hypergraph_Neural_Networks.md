@@ -1,3 +1,7 @@
+---
+publishDate: 2025-12-02T16:43:47+08:00
+updatedDate: 2025-12-02T23:00:33+08:00
+---
 
 ---
 title: Paper-Hypergraph Neural Networks
