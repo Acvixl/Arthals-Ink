@@ -1,10 +1,7 @@
----
-publishDate: 2025-12-03T13:28:12+08:00
-updatedDate: 2025-12-03T23:32:09+08:00
----
 
 publishDate: 2025-12-03T13:28:12+08:00
 updatedDate: 2025-12-03T23:32:09+08:00
+publishDate: 2025-12-03T13:28:12+08:00
 ---
 title: Weekly Report
 description: Display weekly reports.Only for record keeping purposes
