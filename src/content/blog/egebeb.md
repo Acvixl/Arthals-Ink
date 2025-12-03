@@ -1,4 +1,8 @@
 ---
+publishDate: 2024-12-12T23:09:28+08:00
+updatedDate: 2025-12-03T22:27:10+08:00
+---
+---
 updatedDate: 2025-12-03T22:27:10+08:00
 title: rberb
 description: Record today's log
