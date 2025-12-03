@@ -8,16 +8,16 @@ function removeDupsAndLowerCase(array: string[]) {
   return Array.from(distinctItems)
 }
 
-/**
- * 可选日期：把空字符串 / null / undefined / 0 过滤掉，避免 z.coerce.date() 解析出 1970
- */
+function normalizeEmptyDate(v: unknown) {
+  // 防止 "" / null / undefined / 0 / "0" 被 z.coerce.date() 转成 1970
+  if (v === '' || v == null) return undefined
+  if (v === 0 || v === '0') return undefined
+  if (typeof v === 'string' && v.trim() === '') return undefined
+  return v
+}
+
 const optionalDateSchema = z.preprocess(
-  (v) => {
-    if (v === '' || v == null) return undefined
-    if (v === 0 || v === '0') return undefined
-    if (typeof v === 'string' && v.trim() === '') return undefined
-    return v
-  },
+  normalizeEmptyDate,
   z.coerce.date().optional()
 )
 
@@ -30,10 +30,8 @@ const blog = defineCollection({
         title: z.string().max(60),
         description: z.string().max(1600),
 
-        // ✅ 仍然必填（你前面说过要还原 publishDate / updatedDate 一致体系）
-        publishDate: z.coerce.date(),
-
-        // ✅ 不填 updatedDate 没关系（由下面 transform 兜底）
+        // ✅ 允许不写：Action 会写回；写回前也不让构建挂
+        publishDate: optionalDateSchema,
         updatedDate: optionalDateSchema,
 
         heroImage: z
@@ -53,15 +51,16 @@ const blog = defineCollection({
         comment: z.boolean().default(true),
         slug: z.string().optional()
       })
-      .transform((data) => ({
-        ...data,
-
-        /**
-         * ✅ 你的需求：不填 updatedDate 时，显示“现在时间”
-         * 这会在每次构建/部署时更新为构建时刻
-         */
-        updatedDate: data.updatedDate ?? new Date()
-      }))
+      .transform((data) => {
+        // ✅ 在脚本写回前的兜底：避免 undefined/1970 导致页面或 TS 报错
+        const publish = data.publishDate ?? new Date()
+        const update = data.updatedDate ?? publish
+        return {
+          ...data,
+          publishDate: publish,
+          updatedDate: update
+        }
+      })
 })
 
 // Define docs collection
@@ -73,19 +72,22 @@ const docs = defineCollection({
         title: z.string().max(60),
         description: z.string().max(1600),
 
-        publishDate: z.coerce.date().default(() => new Date()),
+        publishDate: optionalDateSchema,
         updatedDate: optionalDateSchema,
 
         tags: z.array(z.string()).default([]).transform(removeDupsAndLowerCase),
         draft: z.boolean().default(false),
         order: z.number().default(999)
       })
-      .transform((data) => ({
-        ...data,
-
-        // docs 同理：不填 updatedDate -> 显示现在（构建时）
-        updatedDate: data.updatedDate ?? new Date()
-      }))
+      .transform((data) => {
+        const publish = data.publishDate ?? new Date()
+        const update = data.updatedDate ?? publish
+        return {
+          ...data,
+          publishDate: publish,
+          updatedDate: update
+        }
+      })
 })
 
 export const collections = { blog, docs }
