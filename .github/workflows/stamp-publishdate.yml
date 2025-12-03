@@ -12,6 +12,7 @@ permissions:
 
 jobs:
   stamp:
+    # ✅ 防止 actions 自己 push 后再次触发死循环
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
 
@@ -33,6 +34,7 @@ jobs:
             exit 0
           fi
 
+          # 转北京时间（+08:00）
           to_bj() {
             TZ=Asia/Shanghai date -d "$1" +"%Y-%m-%dT%H:%M:%S%:z"
           }
@@ -40,9 +42,12 @@ jobs:
           for file in "${files[@]}"; do
             echo "Processing $file"
 
+            # 首次提交时间（文件首次出现）
             first=$(git log --follow --diff-filter=A --format=%cI -- "$file" | tail -n 1 || true)
+            # 最后一次提交时间
             last=$(git log -1 --format=%cI -- "$file" || true)
 
+            # 极少数情况：没有历史
             if [ -z "${first:-}" ] || [ -z "${last:-}" ]; then
               echo "No git history for $file, skip."
               continue
@@ -51,7 +56,7 @@ jobs:
             first_bj=$(to_bj "$first")
             last_bj=$(to_bj "$last")
 
-            # no frontmatter => create
+            # 如果没有 frontmatter，创建
             if ! head -n 1 "$file" | grep -q '^---$'; then
               tmp=$(mktemp)
               {
@@ -65,12 +70,17 @@ jobs:
               continue
             fi
 
-            # publishDate: write only when missing OR empty
+            # publishDate：缺失或空值才写入
+            # 空值包括：
+            # - publishDate:
+            # - publishDate: ""
+            # - publishDate: ''
+            # - publishDate: 0
             pub_state=$(awk '
               NR==1 {in=($0=="---"); next}
               in==1 && $0=="---" {exit 0}
-              in==1 && $0 ~ /^publishDate:/ {
-                sub(/^publishDate:[ \t]*/, "", $0)
+              in==1 && $0 ~ /^[[:space:]]*publishDate:/ {
+                sub(/^[[:space:]]*publishDate:[ \t]*/, "", $0)
                 gsub(/[ \t]/, "", $0)
                 if ($0=="" || $0=="\"\"" || $0=="'\'''\''" || $0=="0") { print "EMPTY"; exit 0 }
                 print "OK"; exit 0
@@ -88,15 +98,15 @@ jobs:
                   in=0
                   next
                 }
-                state=="EMPTY" && in==1 && $0 ~ /^publishDate:/ { print "publishDate: " first; next }
+                state=="EMPTY" && in==1 && $0 ~ /^[[:space:]]*publishDate:/ { print "publishDate: " first; next }
                 {print}
               ' "$file" > "$tmp"
               mv "$tmp" "$file"
             fi
 
-            # updatedDate: always sync to last commit
-            if grep -q '^updatedDate:' "$file"; then
-              sed -i "s/^updatedDate:.*/updatedDate: $last_bj/" "$file"
+            # updatedDate：每次都同步为 last_bj（存在就替换，不存在就插入）
+            if grep -q '^[[:space:]]*updatedDate:' "$file"; then
+              sed -i "s/^[[:space:]]*updatedDate:.*/updatedDate: $last_bj/" "$file"
             else
               tmp=$(mktemp)
               awk -v last="$last_bj" '
