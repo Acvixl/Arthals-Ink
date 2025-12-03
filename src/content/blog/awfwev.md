@@ -1,7 +1,6 @@
 ---
 title: rnb
 description: Record today's log
-
 tags:
   - Today_log
   - pubData
@@ -10,4 +9,4 @@ slug: ewdrf
 ---
 ## 🛠️ The Record of today's log
 df sssss
-vveee
+vveeewfcvv
