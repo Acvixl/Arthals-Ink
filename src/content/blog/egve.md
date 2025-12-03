@@ -1,8 +1,6 @@
 ---
 title: eve'rebr
 description: Record today's log
-publishDate:
-updatedDate:
 tags:
   - Today_log
   - pubData
@@ -14,3 +12,4 @@ gssfffniorsvno
 moo
 evve
 s c s c skkk
+eveveve
