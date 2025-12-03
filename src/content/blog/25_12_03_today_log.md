@@ -2,7 +2,7 @@
 title: 2025-12-03 Today Log
 description: Record today's log
 publishDate: 
-updatedDate: 2025-12-03T20:34:58+08:00
+updatedDate: 2025-12-03T23:21:12+08:00
 tags:
   - Today_log
   - pubData
@@ -37,7 +37,7 @@ slug: 25_12_13_today_log
 title: 2025-12-03 Today Log
 description: Record today's log
 publishDate: 
-updatedDate: 2025-12-03T20:34:58+08:00
+updatedDate: 2025-12-03T23:21:12+08:00
 tags:
   - Today_log
   - pubData
@@ -86,7 +86,7 @@ const blog = defineCollection({
         description: z.string().max(1600),
 
         publishDate: publishDateSchema,
-updatedDate: 2025-12-03T20:34:58+08:00
+updatedDate: 2025-12-03T23:21:12+08:00
 
         heroImage: z
           .object({
@@ -107,7 +107,7 @@ updatedDate: 2025-12-03T20:34:58+08:00
       })
       .transform((data) => ({
         ...data,
-updatedDate: 2025-12-03T20:34:58+08:00
+updatedDate: 2025-12-03T23:21:12+08:00
       })),
 });
 
@@ -121,7 +121,7 @@ const docs = defineCollection({
         description: z.string().max(1600),
 
         publishDate: publishDateSchema,
-updatedDate: 2025-12-03T20:34:58+08:00
+updatedDate: 2025-12-03T23:21:12+08:00
 
         tags: z.array(z.string()).default([]).transform(removeDupsAndLowerCase),
         draft: z.boolean().default(false),
@@ -129,7 +129,7 @@ updatedDate: 2025-12-03T20:34:58+08:00
       })
       .transform((data) => ({
         ...data,
-updatedDate: 2025-12-03T20:34:58+08:00
+updatedDate: 2025-12-03T23:21:12+08:00
       })),
 });
 
@@ -146,7 +146,7 @@ schema: ({ image }) =>
       description: z.string().max(160),
       publishDate: z.coerce.date(),
       // Optional
-updatedDate: 2025-12-03T20:34:58+08:00
+updatedDate: 2025-12-03T23:21:12+08:00
 ...  
 
 ```
@@ -300,7 +300,7 @@ const blog = defineCollection({
       publishDate: z.coerce.date(),
 
       // 可选：你想显示“更新”就写，不写就不显示
-updatedDate: 2025-12-03T20:34:58+08:00
+updatedDate: 2025-12-03T23:21:12+08:00
 
       heroImage: z.object({
         src: image(),
@@ -326,7 +326,7 @@ const docs = defineCollection({
       title: z.string().max(60),
       description: z.string().max(1600),
       publishDate: z.coerce.date(),
-updatedDate: 2025-12-03T20:34:58+08:00
+updatedDate: 2025-12-03T23:21:12+08:00
       tags: z.array(z.string()).default([]).transform(removeDupsAndLowerCase),
       draft: z.boolean().default(false),
       order: z.number().default(999),
