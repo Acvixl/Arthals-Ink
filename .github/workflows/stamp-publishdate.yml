@@ -36,20 +36,15 @@ jobs:
 
           to_bj() { TZ=Asia/Shanghai date -d "$1" +"%Y-%m-%dT%H:%M:%S%:z"; }
 
-          # 判断第一段 frontmatter 是否“只包含日期字段/空行”
+          # 判断第一段 frontmatter 是否“只包含 publishDate/updatedDate/空行”
           first_fm_only_dates() {
-            # return 0 => yes, only dates
-            # return 1 => no/unknown
             awk '
               NR==1 {inFM=($0=="---"); next}
               inFM==1 && $0=="---" {exit 0}
               inFM!=1 {exit 1}
-              # 允许空行
               $0 ~ /^[[:space:]]*$/ {next}
-              # 允许 publishDate/updatedDate
               $0 ~ /^[[:space:]]*publishDate:/ {next}
               $0 ~ /^[[:space:]]*updatedDate:/ {next}
-              # 出现其它字段 => 不是 only-dates
               {exit 1}
             ' "$1"
           }
@@ -64,7 +59,7 @@ jobs:
             ' "$1"
           }
 
-          # 删除第一段 frontmatter（即删除文件开头从第一行 --- 到第二个 ---）
+          # 删除第一段 frontmatter（删除文件开头从第一行 --- 到第二个 ---）
           drop_first_frontmatter() {
             awk '
               NR==1 {inFM=($0=="---"); if (!inFM) {print; next} next}
@@ -73,14 +68,13 @@ jobs:
             ' "$1"
           }
 
-          # 将 publish/updated 插入到“当前文件的第一段 frontmatter”里（也就是修复后唯一那段）
+          # 写入/更新 publish & updated 到“当前文件第一段 frontmatter”
           upsert_dates_into_first_fm() {
             local file="$1"
             local publish="$2"
             local updated="$3"
 
-            # publish: missing/empty 才写；updated: always写（存在替换，不存在插）
-            # 这里先处理 publish
+            # publish: missing/empty 才写；已有值不动
             pub_state=$(awk '
               NR==1 {inFM=($0=="---"); next}
               inFM==1 && $0=="---" {exit 0}
@@ -106,7 +100,7 @@ jobs:
               sed -i "s/^[[:space:]]*publishDate:.*/publishDate: $publish/" "$file"
             fi
 
-            # updated: always
+            # updated: 永远同步（存在替换，不存在插入）
             if grep -q '^[[:space:]]*updatedDate:' "$file"; then
               sed -i "s/^[[:space:]]*updatedDate:.*/updatedDate: $updated/" "$file"
             else
@@ -151,19 +145,16 @@ jobs:
               continue
             fi
 
-            # ========= 修复双 frontmatter（仅处理“第一段只有日期”这种） =========
+            # ===== 自动修复双 frontmatter（仅处理“第一段只有日期”）=====
             fm_marks=$(grep -c '^---$' "$file" || true)
             if [ "${fm_marks:-0}" -ge 4 ]; then
               if first_fm_only_dates "$file"; then
                 echo "Detected double frontmatter (first only dates). Auto-merging..."
 
-                # 取出第一段日期（可能为空）
                 pub_from_first=""
-                upd_from_first=""
                 while IFS= read -r line; do
                   case "$line" in
                     PUBLISH=*) pub_from_first="${line#PUBLISH=}" ;;
-                    UPDATED=*) upd_from_first="${line#UPDATED=}" ;;
                   esac
                 done < <(extract_first_dates "$file")
 
@@ -172,27 +163,22 @@ jobs:
                 drop_first_frontmatter "$file" > "$tmp"
                 mv "$tmp" "$file"
 
-                # 删除后，文件应以第二段 frontmatter 开头；若不是，直接报错
                 if ! head -n 1 "$file" | grep -q '^---$'; then
                   echo "ERROR: After dropping first frontmatter, file does not start with --- : $file"
                   exit 1
                 fi
 
-                # 将第一段拿到的日期合并进去（publish只在缺失/空时写；updated强制写）
-                # 如果第一段为空，就用 git 时间
+                # publish 可沿用旧值；updated ✅永远用最新 last_bj
                 publish_merge="${pub_from_first:-$first_bj}"
-                updated_merge="${upd_from_first:-$last_bj}"
-                upsert_dates_into_first_fm "$file" "$publish_merge" "$updated_merge"
-
+                upsert_dates_into_first_fm "$file" "$publish_merge" "$last_bj"
               else
                 echo "ERROR: Multiple frontmatter blocks detected (not auto-fixable): $file"
-                echo "Please ensure only ONE frontmatter (--- ... ---) at top."
                 exit 1
               fi
             fi
-            # ========= 双 frontmatter 修复结束 =========
+            # ===== 双 frontmatter 修复结束 =====
 
-            # 正常文件：写入/更新日期
+            # 正常文件：写入/更新日期（updated 永远是 last_bj）
             upsert_dates_into_first_fm "$file" "$first_bj" "$last_bj"
 
             sed -i 's/\r$//' "$file"
