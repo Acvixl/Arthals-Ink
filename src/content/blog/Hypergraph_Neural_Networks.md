@@ -1,6 +1,6 @@
 ---
 publishDate: 2025-12-02T16:43:47+08:00
-updatedDate: 2025-12-03T23:25:14+08:00
+updatedDate: 2025-12-03T23:25:35+08:00
 ---
 
 
@@ -5961,7 +5961,7 @@ SPACEGNN 提出了一种在**多几何空间（欧氏 / 双曲 / 球面等）中
 title: Paper-Hypergraph Neural Networks
 description: xxx
 publishDate: 2025-12-01
-updatedDate: 2025-12-03T23:25:14+08:00
+updatedDate: 2025-12-03T23:25:35+08:00
 tags:
   - AAAI_2019
   - hypergraph_neural_networks(HGNN)
