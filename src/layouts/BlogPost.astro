@@ -45,13 +45,17 @@ const socialImage = heroImage
     : heroImage.src.src
   : '/images/social-card.png'
 
-// meta 用：更新时间优先，否则发布时间
 const articleDate = updatedDate?.toISOString() ?? publishDate.toISOString()
 const primaryColor = data.heroImage?.color ?? 'hsl(var(--primary) / var(--un-text-opacity))'
 
-// ✅ 仅详情页显示“具体时间（北京时间）”
+// ✅ 仅详情页显示具体时间（北京时间）
 const publish = publishDate
 const update = updatedDate ?? publishDate
+
+// ✅ 如果两者一样，不显示 Update
+const showUpdate =
+  !!updatedDate && updatedDate instanceof Date &&
+  updatedDate.getTime() !== publishDate.getTime()
 
 const fmtBJTime = new Intl.DateTimeFormat('zh-CN', {
   timeZone: 'Asia/Shanghai',
@@ -66,10 +70,6 @@ const fmtBJTime = new Intl.DateTimeFormat('zh-CN', {
 
 const publishText = fmtBJTime.format(publish)
 const updateText = fmtBJTime.format(update)
-
-// 如果你不想 update 永远显示（当它等于 publish 时），用这个开关：
-// const showUpdate = !!updatedDate && updatedDate.getTime() !== publishDate.getTime()
-const showUpdate = true
 ---
 
 <PageLayout
